@@ -12,21 +12,21 @@
 #include <TH1F.h>
 #include <TH2F.h>
 
-// --- Función mejorada para formato jerárquico Año-Mes-Día Hora:Min:Seg.us ---
+// Función para fecha Año-Mes-Día Hora:Min:Seg.us 
 std::string FormatearTiempoGlobal(double total_us) {
-    // 1. Extraer segundos y microsegundos
+    // Extraer segundos y microsegundos
     time_t segundos = static_cast<time_t>(total_us / 1e6);
     long microsegundos = static_cast<long>(std::fmod(total_us, 1e6));
 
-    // 2. Convertir segundos a estructura de tiempo local (año, mes, día, etc.)
+    // Convertir segundos a estructura de tiempo local (año, mes, día, etc.)
     struct tm *timeinfo = std::localtime(&segundos);
 
-    // 3. Crear el buffer para la fecha/hora hasta los segundos
+    // Crear el buffer para la fecha/hora hasta los segundos
     char buffer[80];
     // Formato: %Y (Año), %m (Mes), %d (Día), %H:%M:%S (Hora:Min:Seg)
     std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", timeinfo);
 
-    // 4. Unir todo en un stream para añadir los microsegundos con precisión
+    // Unir todo en un stream para añadir los microsegundos con precisión
     std::stringstream ss;
     ss << buffer << "." << std::setfill('0') << std::setw(6) << microsegundos;
     
@@ -77,7 +77,7 @@ void ProcesarPSA() {
         hPersistencia[ch] = new TH2F(Form("hPersist_Ch%d", ch), 
                                      Form("Persistencia Canal %d;Time (ns);Amplitude (ADC)", ch),
                                      SAMPLES, 0, SAMPLES * BIN_WIDTH, 
-                                     550, -50, 500);
+                                     550, -50, 1500);
     }
 
     Long64_t nEntries = events->GetEntries();
@@ -119,7 +119,7 @@ void ProcesarPSA() {
         }
     }
 
-    // --- SALIDA ORDENADA JERÁRQUICAMENTE ---
+    // Salida de tiempo
     std::cout << "\n===========================================" << std::endl;
     std::cout << "INFORMACIÓN DE LA ADQUISICIÓN (TIEMPO REAL)" << std::endl;
     std::cout << "===========================================" << std::endl;
