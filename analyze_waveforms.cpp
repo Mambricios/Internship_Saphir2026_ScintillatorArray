@@ -191,9 +191,66 @@ void CalcularRate(int canal_objetivo = 0, float threshold = 150.0) {
     f->Close();
 }
 
-// Ejecución
+// Función para generar la correlación 
+void GenerarCorrelacionCanales(int canal_objetivo1 = 0, int canal_objetivo2 = 1) {
+    TFile *f = new TFile("analisis_pulsos.root", "UPDATE");
+    if (!f || f->IsZombie()) return;
+
+    TTree *t1 = (TTree*)f->Get(Form("p%d", canal_objetivo1));
+    TTree *t2 = (TTree*)f->Get(Form("p%d", canal_objetivo2));
+
+    if (!t1 || !t2) {
+        std::cout << "Error: No se encontraron los árboles de los canales seleccionados." << std::endl;
+        f->Close();
+        return;
+    }
+
+    // Variables para f_int
+    float f_int1, f_int2;
+    t1->SetBranchAddress("f_int", &f_int1);
+    t2->SetBranchAddress("f_int", &f_int2);
+
+    // Variables para f_max
+    float f_max1, f_max2;
+    t1->SetBranchAddress("f_max", &f_max1);
+    t2->SetBranchAddress("f_max", &f_max2);
+
+    // Histograma de correlación para f_int
+    TH2F *hCorrInt = new TH2F(Form("hCorr_Int_Ch%d_Ch%d", canal_objetivo1, canal_objetivo2), 
+                              Form("Correlacion Integral: Ch%d vs Ch%d;Integral Ch%d;Integral Ch%d", canal_objetivo1, canal_objetivo2, canal_objetivo1, canal_objetivo2), 
+                              200, 0, 50000, 
+                              200, 0, 50000);
+
+    // Histograma de correlación para f_max
+    TH2F *hCorrMax = new TH2F(Form("hCorr_Max_Ch%d_Ch%d", canal_objetivo1, canal_objetivo2), 
+                              Form("Correlacion Amplitud Max: Ch%d vs Ch%d;f_max Ch%d (ADC);f_max Ch%d (ADC)", canal_objetivo1, canal_objetivo2, canal_objetivo1, canal_objetivo2), 
+                              200, 0, 1500, 
+                              200, 0, 1500);
+
+    Long64_t nEntries = t1->GetEntries();
+    
+    for (Long64_t i = 0; i < nEntries; ++i) {
+        t1->GetEntry(i);
+        t2->GetEntry(i);
+        
+        hCorrInt->Fill(f_int1, f_int2);
+        hCorrMax->Fill(f_max1, f_max2);
+    }
+
+    // Guardar ambos con escala de colores
+    hCorrInt->SetOption("P");
+    hCorrMax->SetOption("P");
+    
+    hCorrInt->Write("", TObject::kOverwrite);
+    hCorrMax->Write("", TObject::kOverwrite);
+    
+    f->Close();
+}
+
+// Ejecución actualizada
 int main() {
     ProcesarPSA();
     CalcularRate(0, 150.0);
-    return 0;
+    //GenerarCorrelacionCanales(0, 25); 
 }
+
