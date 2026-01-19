@@ -3,13 +3,14 @@
 # Comprobar si se pasó el argumento de la fecha
 if [ -z "$1" ]; then
     echo "Uso: ./procesar_dia.sh AAAAMMDD"
-    echo "Ejemplo: ./procesar_dia.sh 20260113"
     exit 1
 fi
 
 DIA=$1
-FOLDER_DATA="testLargeHodoscope/$DIA"
-FOLDER_OUT="analisis_$DIA"
+# RUTA ABSOLUTA DE LOS DATOS (Solo lectura)
+FOLDER_DATA="/data/user/mayala/testLargeHodoscope/$DIA"
+# RUTA EN TU HOME DE USUARIO
+FOLDER_OUT="/user/santibanez/analisis_$DIA"
 
 # 1. Verificar si la carpeta de datos originales existe
 if [ ! -d "$FOLDER_DATA" ]; then
@@ -17,40 +18,37 @@ if [ ! -d "$FOLDER_DATA" ]; then
     exit 1
 fi
 
-# 2. Crear la carpeta de salida si no existe
-if [ ! -d "$FOLDER_OUT" ]; then
-    echo "Creando carpeta de destino: $FOLDER_OUT"
-    mkdir -p "$FOLDER_OUT"
-fi
+# 2. Crear la carpeta de salida en tu usuario
+mkdir -p "$FOLDER_OUT"
 
 echo "===================================================="
-echo "Iniciando procesamiento del día: $DIA"
-echo "Origen: $FOLDER_DATA"
-echo "Destino: $FOLDER_OUT"
+echo "Iniciando procesamiento en Clúster: $DIA"
+echo "Leyendo de: $FOLDER_DATA"
+echo "Guardando en: $FOLDER_OUT"
 echo "===================================================="
 
-# 3. Iterar sobre archivos de adquisición
-# Usamos un contador para informar el progreso
 count=0
 for file in "$FOLDER_DATA"/acq_*.root; do
-    # Verificar si existen archivos para evitar errores de loop vacío
     [ -e "$file" ] || continue
     
     count=$((count + 1))
-    echo ""
-    echo "[$count] Procesando: $(basename "$file")"
+    FILENAME=$(basename "$file")
+    echo "[$count] Procesando: $FILENAME"
     
-    # Ejecutar el binario automático
-    ./bin/analyze_auto "$file"
+    # BUENA PRÁCTICA: Copiar a TMPDIR para procesamiento rápido [cite: 229]
+    cp "$file" "$TMPDIR/$FILENAME"
     
-    # El binario genera un archivo llamado 'analisis_pulsos_acq_XXXX.root' en la raíz.
-    # Lo movemos inmediatamente a la carpeta de destino.
+    # Ejecutar el binario (asegúrate de que esté en tu carpeta bin)
+    ./bin/analyze_auto "$TMPDIR/$FILENAME"
+    
+    # Mover el resultado a tu carpeta de usuario
+    # El binario genera 'analisis_pulsos_acq_XXXX.root' en el directorio actual de ejecución
     mv analisis_pulsos_*.root "$FOLDER_OUT/" 2>/dev/null
+    
+    # Limpiar el archivo temporal para no llenar el nodo [cite: 229]
+    rm "$TMPDIR/$FILENAME"
 done
 
-echo ""
 echo "===================================================="
-echo "PROCESO FINALIZADO"
-echo "Total de archivos procesados: $count"
-echo "Los resultados están en: $FOLDER_OUT/"
+echo "PROCESO FINALIZADO. Archivos en: $FOLDER_OUT/"
 echo "===================================================="
