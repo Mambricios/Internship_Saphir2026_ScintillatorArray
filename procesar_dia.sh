@@ -1,54 +1,40 @@
 #!/bin/bash
+FECHA=$1
 
-# Comprobar si se pasó el argumento de la fecha
-if [ -z "$1" ]; then
-    echo "Uso: ./procesar_dia.sh AAAAMMDD"
+# 1. Validación de entrada
+if [ -z "$FECHA" ]; then 
+    echo "Uso: ./procesar_dia.sh 20251122"
     exit 1
 fi
 
-DIA=$1
-# RUTA ABSOLUTA DE LOS DATOS (Solo lectura)
-FOLDER_DATA="/data/user/mayala/testLargeHodoscope/$DIA"
-# RUTA EN TU HOME DE USUARIO
-FOLDER_OUT="/user/santibanez/analisis_$DIA"
+# 2. Preparación
+DIR_SALIDA="analisis_$FECHA"
+mkdir -p "$DIR_SALIDA"
 
-# 1. Verificar si la carpeta de datos originales existe
-if [ ! -d "$FOLDER_DATA" ]; then
-    echo "Error: La carpeta de datos $FOLDER_DATA no existe."
-    exit 1
-fi
+echo "[1/3] Compilando analizador..."
+g++ analyze_waveforms.cpp -o analyze `root-config --cflags --libs`
 
-# 2. Crear la carpeta de salida en tu usuario
-mkdir -p "$FOLDER_OUT"
-
-echo "===================================================="
-echo "Iniciando procesamiento en Clúster: $DIA"
-echo "Leyendo de: $FOLDER_DATA"
-echo "Guardando en: $FOLDER_OUT"
-echo "===================================================="
-
-count=0
-for file in "$FOLDER_DATA"/acq_*.root; do
-    [ -e "$file" ] || continue
-    
-    count=$((count + 1))
-    FILENAME=$(basename "$file")
-    echo "[$count] Procesando: $FILENAME"
-    
-    # BUENA PRÁCTICA: Copiar a TMPDIR para procesamiento rápido [cite: 229]
-    cp "$file" "$TMPDIR/$FILENAME"
-    
-    # Ejecutar el binario (asegúrate de que esté en tu carpeta bin)
-    ./bin/analyze_auto "$TMPDIR/$FILENAME"
-    
-    # Mover el resultado a tu carpeta de usuario
-    # El binario genera 'analisis_pulsos_acq_XXXX.root' en el directorio actual de ejecución
-    mv analisis_pulsos_*.root "$FOLDER_OUT/" 2>/dev/null
-    
-    # Limpiar el archivo temporal para no llenar el nodo [cite: 229]
-    rm "$TMPDIR/$FILENAME"
+# 3. Procesamiento individual
+echo "[2/3] Procesando archivos individuales de la carpeta $FECHA..."
+for raw in "$FECHA"/acq_*.root; do
+    if [ -f "$raw" ]; then
+        base=$(basename "$raw" .root)
+        # Cambiamos acq_ por analisis_ para el nombre de salida
+        salida="$DIR_SALIDA/${base/acq/analisis}.root"
+        echo "Analizando: $raw -> $salida"
+        ./analyze "$raw" "$salida"
+    fi
 done
 
-echo "===================================================="
-echo "PROCESO FINALIZADO. Archivos en: $FOLDER_OUT/"
-echo "===================================================="
+# 4. Unión de archivos (hadd)
+echo "[3/3] Uniendo todos los archivos procesados en uno solo..."
+ARCHIVO_FINAL="total_$FECHA.root"
+
+# -f obliga a sobrescribir si el archivo ya existe
+hadd -f "$DIR_SALIDA/$ARCHIVO_FINAL" "$DIR_SALIDA"/analisis_*.root
+
+echo "------------------------------------------------"
+echo "✅ Proceso completado con éxito."
+echo "📂 Resultados en: $DIR_SALIDA/"
+echo "📊 Archivo unificado: $DIR_SALIDA/$ARCHIVO_FINAL"
+echo "------------------------------------------------"
