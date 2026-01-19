@@ -8,7 +8,6 @@
 #include <ctime>
 #include <sstream>
 
-// ROOT Includes
 #include <TFile.h>
 #include <TTree.h>
 #include <TH1F.h>
@@ -34,7 +33,7 @@ public:
     }
 };
 
-// --- Utilidades ---
+// --- Tiempo Universal a Hora local ---
 std::string FormatearTiempoGlobal(double total_us) {
     time_t segundos = static_cast<time_t>(total_us / 1e6);
     long microsegundos = static_cast<long>(std::fmod(total_us, 1e6));
@@ -83,7 +82,7 @@ void ProcesarPSA(const char* inputFile, const char* outputFile) {
         hPersistencia[ch] = new TH2F(Form("hPersist_Ch%d", ch), 
                                      Form("Persistencia Canal %d;Time (ns);Amplitude (ADC)", ch),
                                      SAMPLES, 0, SAMPLES * BIN_WIDTH, 
-                                     550, -50, 1500);
+                                     550, -50, 2000);
     }
 
     Long64_t nEntries = events->GetEntries();
@@ -129,7 +128,7 @@ void ProcesarPSA(const char* inputFile, const char* outputFile) {
 
     fOut->Close();
     fIn->Close();
-    std::cout << "[OK] Guardado en: " << outputFile << std::endl;
+    std::cout << "Procesamiento listo, Guardado en: " << outputFile << std::endl;
 }
 
 // --- Cálculo de Rate ---
@@ -156,7 +155,7 @@ void CalcularRate(const char* targetFile, int canal_objetivo, float threshold) {
     int nBins = std::ceil(duracion_total_s / 600.0);
 
     TH1F *hRateGlobal = new TH1F(Form("hRateGlobal_Ch%d", canal_objetivo), 
-                                 Form("Rate Canal %d;Hora del día;Rate (Hz)", canal_objetivo), 
+                                 Form("Rate Canal %d;Hora del dia;Rate (Hz)", canal_objetivo), 
                                  nBins, t_start_sec, t_end_sec);
 
     for (Long64_t i = 0; i < nEntries; ++i) {
@@ -184,6 +183,7 @@ void GenerarCorrelacionCanales(const char* targetFile, std::vector<int> chs) {
     TCanvas *cCorr = new TCanvas("cCorrelaciones", "Correlaciones Múltiples", 1200, 800);
     cCorr->Divide(3, 2);
     int padCount = 1;
+    double threshold = 150.0;
 
     for (size_t i = 0; i < chs.size(); ++i) {
         for (size_t j = i + 1; j < chs.size(); ++j) {
@@ -202,12 +202,16 @@ void GenerarCorrelacionCanales(const char* targetFile, std::vector<int> chs) {
             cCorr->cd(padCount++);
             TH2F *hCorr = new TH2F(Form("hCorr_Ch%d_Ch%d", c1, c2), 
                                    Form("Ch%d vs Ch%d;Ch%d Max;Ch%d Max", c1, c2, c1, c2),
-                                   200, 0, 1000, 200, 0, 1000);
+                                   150, 0, 1000, 150, 0, 1000);
 
             for (Long64_t n = 0; n < t1->GetEntries(); ++n) {
                 t1->GetEntry(n);
                 t2->GetEntry(n);
-                hCorr->Fill(max1, max2);
+
+                if (max1 > threshold && max2 > threshold) {
+                    hCorr->Fill(max1, max2);
+                }
+
             }
             hCorr->Draw("COLZ");
             hCorr->Write("", TObject::kOverwrite);
@@ -246,7 +250,7 @@ void CalcularRateCoincidencia(const char* targetFile, int c1, int c2, float thre
     int nBins = std::ceil(duracion_total_s / 600.0);
 
     TH1F *hRateCoin = new TH1F(Form("hRateCoin_Ch%d_Ch%d", c1, c2), 
-                               Form("Rate Coincidencia Ch%d AND Ch%d;Hora del día;Rate (Hz)", c1, c2), 
+                               Form("Rate Coincidencia Ch%d AND Ch%d;Hora del dia;Rate (Hz)", c1, c2), 
                                nBins, t_start_sec, t_end_sec);
 
     for (Long64_t i = 0; i < nEntries; ++i) {
@@ -292,7 +296,7 @@ void CalcularRateCoincidenciaCuadruple(const char* targetFile, std::vector<int> 
     int nBins = std::ceil(duracion_total_s / 600.0);
 
     TH1F *hRateQuad = new TH1F(Form("hRateQuad_%d_%d_%d_%d", chs[0], chs[1], chs[2], chs[3]), 
-                               Form("Rate Coincidencia 4 Chs;Hora del día;Rate (Hz)"), 
+                               Form("Rate Coincidencia 4 Chs;Hora del dia;Rate (Hz)"), 
                                nBins, t_start_sec, t_end_sec);
 
     for (Long64_t i = 0; i < nEntries; ++i) {
@@ -316,6 +320,85 @@ void CalcularRateCoincidenciaCuadruple(const char* targetFile, std::vector<int> 
     std::cout << "[OK] Rate de coincidencia cuádruple generado." << std::endl;
 }
 
+// --- Rate OR de Barras (S1 || S2 || S3 || S4) ---
+void CalcularRateORBarras(const char* targetFile, float threshold) {
+    TFile *f = TFile::Open(targetFile, "UPDATE");
+    if (!f || f->IsZombie()) return;
+
+    // Configuración física de las barras del plano superior
+    std::vector<std::vector<int>> barras = {
+        {0, 26, 1, 27}, // S1
+        {3, 24, 2, 25}, // S2
+        {4, 30, 5, 31}, // S3
+        {6, 28, 7, 29}  // S4
+    };
+
+    const int nB = 4; // Número de barras
+    TTree* trees[nB][4];
+    float maxs[nB][4];
+    double time_ref;
+
+    // Vincular todos los árboles y ramas
+    for(int i = 0; i < nB; ++i) {
+        for(int j = 0; j < 4; ++j) {
+            trees[i][j] = (TTree*)f->Get(Form("p%d", barras[i][j]));
+            if(!trees[i][j]) {
+                std::cerr << "[!] Error: No se halló el canal p" << barras[i][j] << std::endl;
+                f->Close(); return;
+            }
+            trees[i][j]->SetBranchAddress("f_max", &maxs[i][j]);
+            // Usamos el tiempo del primer canal de la primera barra como referencia global
+            if(i == 0 && j == 0) trees[i][j]->SetBranchAddress("f_acqTime", &time_ref);
+        }
+    }
+
+    Long64_t nEntries = trees[0][0]->GetEntries();
+    trees[0][0]->GetEntry(0);
+    double t_start = time_ref / 1e6;
+    trees[0][0]->GetEntry(nEntries - 1);
+    double t_end = time_ref / 1e6;
+
+    int nBins = std::ceil((t_end - t_start) / 600.0);
+    TH1F *hRateOR = new TH1F("hRate_PlanoSuperior_OR", 
+                             "Rate Plano Superior (S1||S2||S3||S4);Hora;Rate (Hz)", 
+                             nBins, t_start, t_end);
+
+    std::cout << "Analizando " << nEntries << " eventos para OR de Barras..." << std::endl;
+
+    for (Long64_t i = 0; i < nEntries; ++i) {
+        bool hitPlano = false;
+        
+        // Iteramos sobre cada barra
+        for(int b = 0; b < nB; ++b) {
+            bool coincidenciaBarra = true;
+            // AND de los 4 SiPMs de la barra 'b'
+            for(int c = 0; c < 4; ++c) {
+                trees[b][c]->GetEntry(i);
+                if(maxs[b][c] <= threshold) {
+                    coincidenciaBarra = false;
+                    break;
+                }
+            }
+            // Si la barra b tuvo coincidencia, el plano se activó
+            if(coincidenciaBarra) {
+                hitPlano = true;
+                break; // OR: con una barra basta
+            }
+        }
+        
+        if(hitPlano) hRateOR->Fill(time_ref / 1e6);
+    }
+
+    hRateOR->GetXaxis()->SetTimeDisplay(1);
+    hRateOR->GetXaxis()->SetTimeFormat("%H:%M");
+    hRateOR->GetXaxis()->SetTimeOffset(0, "gmt");
+    hRateOR->Scale(1.0 / 600.0);
+    hRateOR->Write("", TObject::kOverwrite);
+    
+    f->Close();
+    std::cout << "[OK] Histograma de Rate OR guardado exitosamente." << std::endl;
+}
+
 // --- MAIN ---
 int main(int argc, char** argv) {
     if (argc >= 3) {
@@ -330,6 +413,7 @@ int main(int argc, char** argv) {
     std::cout << "3. Correlación entre 4 canales" << std::endl;
     std::cout << "4. Rate por Coincidencia AND (2 canales)" << std::endl;
     std::cout << "5. Rate por Coincidencia AND (4 canales)" << std::endl;
+    std::cout << "6. Rate OR de Barras (S1 || S2 || S3 || S4)" << std::endl;
     std::cout << "0. Salir" << std::endl;
     std::cout << "Seleccione: ";
     if (!(std::cin >> opcion)) return 0;
@@ -377,6 +461,12 @@ int main(int argc, char** argv) {
                 std::cin >> chs[i];
             }
             CalcularRateCoincidenciaCuadruple(file.c_str(), chs, 150.0);
+            break;
+        }
+        case 6: {
+            std::string file;
+            std::cout << "Archivo .root procesado: "; std::cin >> file;
+            CalcularRateORBarras(file.c_str(), 150.0);
             break;
         }
     }
