@@ -6,31 +6,35 @@
 #include <cfloat>
 #include <iomanip>
 #include <ctime>
+#include <sstream>
+
+// ROOT Includes
 #include <TFile.h>
 #include <TTree.h>
 #include <TH1F.h>
 #include <TH2F.h>
 #include <TCanvas.h>
+#include <TStyle.h>
+#include <TAxis.h>
 
-// Constantes
+// --- Constantes Globales ---
 const int NUM_CHANNELS = 32;
 const int SAMPLES = 40;
 const float BIN_WIDTH = 8.0;
 
-// Estructuras de Datos
+// --- Estructuras de Datos ---
 class Pulse {
 public:
     float f_max;    
     float f_t0;     
     float f_int;    
     double f_acqTime; 
-
     void Reset() {
         f_max = 0; f_t0 = 0; f_int = 0; f_acqTime = 0;
     }
 };
 
-// Convierte microsegundos a formato: Año-Mes-Día Hora:Min:Seg.us
+// --- Utilidades ---
 std::string FormatearTiempoGlobal(double total_us) {
     time_t segundos = static_cast<time_t>(total_us / 1e6);
     long microsegundos = static_cast<long>(std::fmod(total_us, 1e6));
@@ -44,19 +48,27 @@ std::string FormatearTiempoGlobal(double total_us) {
     return ss.str();
 }
 
-// --- Bloques de Procesamiento ---
-
-void ProcesarPSA() {
-    TFile *fIn = new TFile("acq_20251231_192759.root", "READ");
-    if (!fIn || fIn->IsZombie()) return;
+// --- Procesamiento Base ---
+void ProcesarPSA(const char* inputFile, const char* outputFile) {
+    TFile *fIn = TFile::Open(inputFile, "READ");
+    if (!fIn || fIn->IsZombie()) {
+        std::cerr << "[!] Error: No se pudo abrir " << inputFile << std::endl;
+        return;
+    }
     
     TTree *events = (TTree*)fIn->Get("events");
+    if (!events) {
+        std::cerr << "[!] Error: No se encontró el árbol 'events' en " << inputFile << std::endl;
+        fIn->Close();
+        return;
+    }
+
     unsigned long long event_time_us;
     unsigned short waveforms[NUM_CHANNELS][SAMPLES];
     events->SetBranchAddress("event_time_us", &event_time_us);
     events->SetBranchAddress("waveforms", waveforms);
 
-    TFile *fOut = new TFile("analisis_pulsos.root", "RECREATE");
+    TFile *fOut = new TFile(outputFile, "RECREATE");
     TTree* pTree[NUM_CHANNELS];
     TH2F* hPersistencia[NUM_CHANNELS];
     Pulse pData[NUM_CHANNELS];
@@ -67,7 +79,7 @@ void ProcesarPSA() {
         pTree[ch]->Branch("f_t0", &pData[ch].f_t0, "f_t0/F");
         pTree[ch]->Branch("f_int", &pData[ch].f_int, "f_int/F");
         pTree[ch]->Branch("f_acqTime", &pData[ch].f_acqTime, "f_acqTime/D");
-
+        
         hPersistencia[ch] = new TH2F(Form("hPersist_Ch%d", ch), 
                                      Form("Persistencia Canal %d;Time (ns);Amplitude (ADC)", ch),
                                      SAMPLES, 0, SAMPLES * BIN_WIDTH, 
@@ -75,11 +87,6 @@ void ProcesarPSA() {
     }
 
     Long64_t nEntries = events->GetEntries();
-    events->GetEntry(0);
-    double startTime = static_cast<double>(event_time_us);
-    events->GetEntry(nEntries - 1);
-    double endTime = static_cast<double>(event_time_us);
-
     std::cout << "Procesando " << nEntries << " eventos..." << std::endl;
 
     for (Long64_t i = 0; i < nEntries; ++i) {
@@ -111,146 +118,267 @@ void ProcesarPSA() {
         }
     }
 
-    std::cout << "\n===========================================" << std::endl;
-    std::cout << "INFORMACIÓN DE LA ADQUISICIÓN (TIEMPO REAL)" << std::endl;
-    std::cout << "===========================================" << std::endl;
-    std::cout << "Fecha/Hora Inicio: " << FormatearTiempoGlobal(startTime) << std::endl;
-    std::cout << "Fecha/Hora Fin:    " << FormatearTiempoGlobal(endTime) << std::endl;
-    std::cout << "-------------------------------------------" << std::endl;
-    std::cout << "Duración total:    " << (endTime - startTime) / 1e6 << " s" << std::endl;
-    std::cout << "===========================================\n" << std::endl;
-
-    // Histograma de Persistencia
     fOut->cd();
     for (int ch = 0; ch < NUM_CHANNELS; ++ch) {
-        pTree[ch]->Write();
-        hPersistencia[ch]->SetMarkerStyle(1);
-        hPersistencia[ch]->SetMarkerColor(kBlack);
-        hPersistencia[ch]->SetOption("SCAT");
-        hPersistencia[ch]->Write();
+        pTree[ch]->Write(); 
+        hPersistencia[ch]->SetMarkerStyle(1); 
+        hPersistencia[ch]->SetMarkerColor(kBlack); 
+        hPersistencia[ch]->SetOption("SCAT"); 
+        hPersistencia[ch]->Write(); 
     }
+
     fOut->Close();
     fIn->Close();
+    std::cout << "[OK] Guardado en: " << outputFile << std::endl;
 }
 
-// Rate of Events
-void CalcularRate(int canal_objetivo = 0, float threshold = 150.0) {
-    TFile *f = new TFile("analisis_pulsos.root", "UPDATE");
+// --- Cálculo de Rate ---
+void CalcularRate(const char* targetFile, int canal_objetivo, float threshold) {
+    TFile *f = TFile::Open(targetFile, "UPDATE");
     if (!f || f->IsZombie()) return;
 
     TTree *t = (TTree*)f->Get(Form("p%d", canal_objetivo));
+    if(!t) { f->Close(); return; }
+
     Pulse p;
     t->SetBranchAddress("f_max", &p.f_max);
     t->SetBranchAddress("f_acqTime", &p.f_acqTime);
 
     Long64_t nEntries = t->GetEntries();
+    if (nEntries < 2) { f->Close(); return; }
+
     t->GetEntry(0);
-    double t_start = p.f_acqTime;
+    double t_start_sec = p.f_acqTime / 1e6; 
     t->GetEntry(nEntries - 1);
-    double t_end = p.f_acqTime;
-
-    double duracion_total_s = (t_end - t_start) / 1e6;
+    double t_end_sec = p.f_acqTime / 1e6;
     
-    // Histograma 10 min
-    int nBins10 = std::ceil(duracion_total_s / 600.0);
-    TH1F *hRate10 = new TH1F("hRate10", Form("Rate Ch%d (10 min bins);Tiempo (min);Rate (Hz)", canal_objetivo), nBins10, 0, nBins10 * 10);
+    double duracion_total_s = t_end_sec - t_start_sec;
+    int nBins = std::ceil(duracion_total_s / 600.0);
 
-    // Histograma 5 min
-    int nBins5 = std::ceil(duracion_total_s / 300.0);
-    TH1F *hRate5 = new TH1F("hRate5", Form("Rate Ch%d (5 min bins);Tiempo (min);Rate (Hz)", canal_objetivo), nBins5, 0, nBins5 * 5);
+    TH1F *hRateGlobal = new TH1F(Form("hRateGlobal_Ch%d", canal_objetivo), 
+                                 Form("Rate Canal %d;Hora del día;Rate (Hz)", canal_objetivo), 
+                                 nBins, t_start_sec, t_end_sec);
 
     for (Long64_t i = 0; i < nEntries; ++i) {
         t->GetEntry(i);
         if (p.f_max > threshold) {
-            double tiempo_relativo_min = ((p.f_acqTime - t_start) / 1e6) / 60.0;
-            hRate10->Fill(tiempo_relativo_min);
-            hRate5->Fill(tiempo_relativo_min);
+            hRateGlobal->Fill(p.f_acqTime / 1e6);
         }
     }
 
-    // Normalización y cálculo de error (10 min)
-    for (int b = 1; b <= nBins10; ++b) {
-        double conteo = hRate10->GetBinContent(b);
-        hRate10->SetBinContent(b, conteo / 600.0); 
-        hRate10->SetBinError(b, std::sqrt(conteo) / 600.0);
-    }
+    hRateGlobal->GetXaxis()->SetTimeDisplay(1);
+    hRateGlobal->GetXaxis()->SetTimeFormat("%H:%M");
+    hRateGlobal->GetXaxis()->SetTimeOffset(0, "gmt");
 
-    // Normalización y cálculo de error (5 min)
-    for (int b = 1; b <= nBins5; ++b) {
-        double conteo = hRate5->GetBinContent(b);
-        hRate5->SetBinContent(b, conteo / 300.0); 
-        hRate5->SetBinError(b, std::sqrt(conteo) / 300.0);
-    }
-
-    hRate10->SetMarkerStyle(20); hRate10->SetMarkerColor(kBlue+2);
-    hRate5->SetMarkerStyle(21); hRate5->SetMarkerColor(kRed+2);
-    
-    hRate10->Write("", TObject::kOverwrite);
-    hRate5->Write("", TObject::kOverwrite);
-    
+    hRateGlobal->Scale(1.0 / 600.0);
+    hRateGlobal->Write("", TObject::kOverwrite);
     f->Close();
+    std::cout << "[OK] Histograma de Rate generado con eje de tiempo real." << std::endl;
 }
 
-// Función para generar la correlación 
-void GenerarCorrelacionCanales(int canal_objetivo1 = 0, int canal_objetivo2 = 1) {
-    TFile *f = new TFile("analisis_pulsos.root", "UPDATE");
+// --- Correlación entre 4 canales ---
+void GenerarCorrelacionCanales(const char* targetFile, std::vector<int> chs) {
+    TFile *f = TFile::Open(targetFile, "UPDATE");
     if (!f || f->IsZombie()) return;
 
-    TTree *t1 = (TTree*)f->Get(Form("p%d", canal_objetivo1));
-    TTree *t2 = (TTree*)f->Get(Form("p%d", canal_objetivo2));
+    TCanvas *cCorr = new TCanvas("cCorrelaciones", "Correlaciones Múltiples", 1200, 800);
+    cCorr->Divide(3, 2);
+    int padCount = 1;
 
-    if (!t1 || !t2) {
-        std::cout << "Error: No se encontraron los árboles de los canales seleccionados." << std::endl;
-        f->Close();
-        return;
+    for (size_t i = 0; i < chs.size(); ++i) {
+        for (size_t j = i + 1; j < chs.size(); ++j) {
+            int c1 = chs[i];
+            int c2 = chs[j];
+
+            TTree *t1 = (TTree*)f->Get(Form("p%d", c1));
+            TTree *t2 = (TTree*)f->Get(Form("p%d", c2));
+
+            if (!t1 || !t2) continue;
+
+            float max1, max2;
+            t1->SetBranchAddress("f_max", &max1);
+            t2->SetBranchAddress("f_max", &max2);
+
+            cCorr->cd(padCount++);
+            TH2F *hCorr = new TH2F(Form("hCorr_Ch%d_Ch%d", c1, c2), 
+                                   Form("Ch%d vs Ch%d;Ch%d Max;Ch%d Max", c1, c2, c1, c2),
+                                   200, 0, 1000, 200, 0, 1000);
+
+            for (Long64_t n = 0; n < t1->GetEntries(); ++n) {
+                t1->GetEntry(n);
+                t2->GetEntry(n);
+                hCorr->Fill(max1, max2);
+            }
+            hCorr->Draw("COLZ");
+            hCorr->Write("", TObject::kOverwrite);
+        }
     }
 
-    // Variables para f_int
-    float f_int1, f_int2;
-    t1->SetBranchAddress("f_int", &f_int1);
-    t2->SetBranchAddress("f_int", &f_int2);
+    cCorr->Write();
+    f->Close();
+    std::cout << "[OK] Canvas de correlaciones guardado en el archivo." << std::endl;
+}
 
-    // Variables para f_max
-    float f_max1, f_max2;
-    t1->SetBranchAddress("f_max", &f_max1);
-    t2->SetBranchAddress("f_max", &f_max2);
+// --- Rate por Coincidencia (AND) ---
+void CalcularRateCoincidencia(const char* targetFile, int c1, int c2, float threshold) {
+    TFile *f = TFile::Open(targetFile, "UPDATE");
+    if (!f || f->IsZombie()) return;
 
-    // Histograma de correlación para f_int
-    TH2F *hCorrInt = new TH2F(Form("hCorr_Int_Ch%d_Ch%d", canal_objetivo1, canal_objetivo2), 
-                              Form("Correlacion Integral: Ch%d vs Ch%d;Integral Ch%d;Integral Ch%d", canal_objetivo1, canal_objetivo2, canal_objetivo1, canal_objetivo2), 
-                              200, 0, 50000, 
-                              200, 0, 50000);
+    TTree *t1 = (TTree*)f->Get(Form("p%d", c1));
+    TTree *t2 = (TTree*)f->Get(Form("p%d", c2));
+    if(!t1 || !t2) { f->Close(); return; }
 
-    // Histograma de correlación para f_max
-    TH2F *hCorrMax = new TH2F(Form("hCorr_Max_Ch%d_Ch%d", canal_objetivo1, canal_objetivo2), 
-                              Form("Correlacion Amplitud Max: Ch%d vs Ch%d;f_max Ch%d (ADC);f_max Ch%d (ADC)", canal_objetivo1, canal_objetivo2, canal_objetivo1, canal_objetivo2), 
-                              200, 0, 1500, 
-                              200, 0, 1500);
+    float max1, max2;
+    double time1; 
+    t1->SetBranchAddress("f_max", &max1);
+    t1->SetBranchAddress("f_acqTime", &time1);
+    t2->SetBranchAddress("f_max", &max2);
 
     Long64_t nEntries = t1->GetEntries();
-    
+    if (nEntries < 2) { f->Close(); return; }
+
+    t1->GetEntry(0);
+    double t_start_sec = time1 / 1e6;
+    t1->GetEntry(nEntries - 1);
+    double t_end_sec = time1 / 1e6;
+
+    double duracion_total_s = t_end_sec - t_start_sec;
+    int nBins = std::ceil(duracion_total_s / 600.0);
+
+    TH1F *hRateCoin = new TH1F(Form("hRateCoin_Ch%d_Ch%d", c1, c2), 
+                               Form("Rate Coincidencia Ch%d AND Ch%d;Hora del día;Rate (Hz)", c1, c2), 
+                               nBins, t_start_sec, t_end_sec);
+
     for (Long64_t i = 0; i < nEntries; ++i) {
         t1->GetEntry(i);
         t2->GetEntry(i);
-        
-        hCorrInt->Fill(f_int1, f_int2);
-        hCorrMax->Fill(f_max1, f_max2);
+        if (max1 > threshold && max2 > threshold) {
+            hRateCoin->Fill(time1 / 1e6);
+        }
     }
 
-    // Guardar ambos con escala de colores
-    hCorrInt->SetOption("P");
-    hCorrMax->SetOption("P");
-    
-    hCorrInt->Write("", TObject::kOverwrite);
-    hCorrMax->Write("", TObject::kOverwrite);
-    
+    hRateCoin->GetXaxis()->SetTimeDisplay(1);
+    hRateCoin->GetXaxis()->SetTimeFormat("%H:%M");
+    hRateCoin->GetXaxis()->SetTimeOffset(0, "gmt");
+    hRateCoin->Scale(1.0 / 600.0);
+    hRateCoin->Write("", TObject::kOverwrite);
     f->Close();
+    std::cout << "[OK] Rate por coincidencia generado exitosamente." << std::endl;
 }
 
-// Ejecución actualizada
-int main() {
-    ProcesarPSA();
-    CalcularRate(0, 150.0);
-    //GenerarCorrelacionCanales(0, 25); 
+// --- Rate por Coincidencia Cuádruple (1&2&3&4) ---
+void CalcularRateCoincidenciaCuadruple(const char* targetFile, std::vector<int> chs, float threshold) {
+    TFile *f = TFile::Open(targetFile, "UPDATE");
+    if (!f || f->IsZombie() || chs.size() < 4) return;
+
+    TTree *trees[4];
+    float maxs[4];
+    double time_ref;
+
+    for(int i = 0; i < 4; ++i) {
+        trees[i] = (TTree*)f->Get(Form("p%d", chs[i]));
+        if(!trees[i]) { f->Close(); return; }
+        trees[i]->SetBranchAddress("f_max", &maxs[i]);
+        if(i == 0) trees[i]->SetBranchAddress("f_acqTime", &time_ref);
+    }
+
+    Long64_t nEntries = trees[0]->GetEntries();
+    trees[0]->GetEntry(0);
+    double t_start_sec = time_ref / 1e6;
+    trees[0]->GetEntry(nEntries - 1);
+    double t_end_sec = time_ref / 1e6;
+
+    double duracion_total_s = t_end_sec - t_start_sec;
+    int nBins = std::ceil(duracion_total_s / 600.0);
+
+    TH1F *hRateQuad = new TH1F(Form("hRateQuad_%d_%d_%d_%d", chs[0], chs[1], chs[2], chs[3]), 
+                               Form("Rate Coincidencia 4 Chs;Hora del día;Rate (Hz)"), 
+                               nBins, t_start_sec, t_end_sec);
+
+    for (Long64_t i = 0; i < nEntries; ++i) {
+        bool all_over = true;
+        for(int j = 0; j < 4; ++j) {
+            trees[j]->GetEntry(i);
+            if(maxs[j] <= threshold) {
+                all_over = false;
+                break;
+            }
+        }
+        if(all_over) hRateQuad->Fill(time_ref / 1e6);
+    }
+
+    hRateQuad->GetXaxis()->SetTimeDisplay(1);
+    hRateQuad->GetXaxis()->SetTimeFormat("%H:%M");
+    hRateQuad->GetXaxis()->SetTimeOffset(0, "gmt");
+    hRateQuad->Scale(1.0 / 600.0);
+    hRateQuad->Write("", TObject::kOverwrite);
+    f->Close();
+    std::cout << "[OK] Rate de coincidencia cuádruple generado." << std::endl;
 }
 
+// --- MAIN ---
+int main(int argc, char** argv) {
+    if (argc >= 3) {
+        ProcesarPSA(argv[1], argv[2]);
+        return 0;
+    }
+
+    int opcion;
+    std::cout << "\n--- SOFTWARE DE ANÁLISIS DE PULSOS ---" << std::endl;
+    std::cout << "1. Procesamiento PSA (Raw -> Root)" << std::endl;
+    std::cout << "2. Análisis Individual (Rate - Umbral 150)" << std::endl;
+    std::cout << "3. Correlación entre 4 canales" << std::endl;
+    std::cout << "4. Rate por Coincidencia AND (2 canales)" << std::endl;
+    std::cout << "5. Rate por Coincidencia AND (4 canales)" << std::endl;
+    std::cout << "0. Salir" << std::endl;
+    std::cout << "Seleccione: ";
+    if (!(std::cin >> opcion)) return 0;
+
+    switch(opcion) {
+        case 1: {
+            std::string in, out;
+            std::cout << "Archivo entrada: "; std::cin >> in;
+            std::cout << "Archivo salida: "; std::cin >> out;
+            ProcesarPSA(in.c_str(), out.c_str());
+            break;
+        }
+        case 2: {
+            int ch; std::string file;
+            std::cout << "Archivo .root procesado: "; std::cin >> file;
+            std::cout << "Canal: "; std::cin >> ch;
+            CalcularRate(file.c_str(), ch, 150.0);
+            break;
+        }
+        case 3: {
+            std::vector<int> chs(4);
+            std::string file;
+            std::cout << "Archivo .root procesado: "; std::cin >> file;
+            for(int i=0; i<4; i++) {
+                std::cout << "Ingrese Canal " << i+1 << ": ";
+                std::cin >> chs[i];
+            }
+            GenerarCorrelacionCanales(file.c_str(), chs);
+            break;
+        }
+        case 4: {
+            int c1, c2; std::string file;
+            std::cout << "Archivo .root procesado: "; std::cin >> file;
+            std::cout << "Canal 1: "; std::cin >> c1;
+            std::cout << "Canal 2: "; std::cin >> c2;
+            CalcularRateCoincidencia(file.c_str(), c1, c2, 150.0);
+            break;
+        }
+        case 5: {
+            std::vector<int> chs(4);
+            std::string file;
+            std::cout << "Archivo .root procesado: "; std::cin >> file;
+            for(int i=0; i<4; i++) {
+                std::cout << "Ingrese Canal " << i+1 << ": ";
+                std::cin >> chs[i];
+            }
+            CalcularRateCoincidenciaCuadruple(file.c_str(), chs, 150.0);
+            break;
+        }
+    }
+    return 0;
+}
