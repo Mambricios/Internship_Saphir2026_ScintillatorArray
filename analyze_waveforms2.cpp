@@ -377,7 +377,6 @@ struct ParUmbral {
     float thrA; // Umbral que debe superar chB para registrar chA
     float thrB; // Umbral que debe superar chA para registrar chB
 };
-
 void GenerarHistogramasMaxAmpCondicionados(const char* targetFile) {
     TFile *f = TFile::Open(targetFile, "UPDATE");
     if (!f || f->IsZombie()) return;
@@ -388,7 +387,6 @@ void GenerarHistogramasMaxAmpCondicionados(const char* targetFile) {
     TTree *T = (TTree*)f->Get("T");
     if (!T) { f->Close(); return; }
 
-    // Lista de pares y thresholds 
     std::vector<ParUmbral> pares = {
         {0, 26, 20.0, 20.0}, {1, 27, 22.0, 18.0}, {3, 24, 20.0, 17.0}, {2, 25, 20.0, 19.0},
         {6, 28, 21.0, 18.0}, {7, 29, 19.0, 19.0}, {4, 30, 19.0, 20.0}, {5, 31, 20.0, 20.0},
@@ -397,113 +395,110 @@ void GenerarHistogramasMaxAmpCondicionados(const char* targetFile) {
     };
 
     Pulse pA, pB;
-    //  Lógica de llenado 
     for (auto const& par : pares) {
         T->ResetBranchAddresses();
         dirCond->cd(); 
-        TH1F *hMaxA_cond = new TH1F(Form("hMax_Ch%d_cond_Ch%d", par.chA, par.chB), 
-                                    Form("Max %d cond %d;ADC;Entries", par.chA, par.chB), 200, 0, 200);
-        TH1F *hMaxB_cond = new TH1F(Form("hMax_Ch%d_cond_Ch%d", par.chB, par.chA), 
-                                    Form("Max %d cond %d;ADC;Entries", par.chB, par.chA), 200, 0, 200);
+        // Importante: Usamos nombres únicos para evitar conflictos al recuperar
+        TH1F *hMaxA_cond = new TH1F(Form("hMax_Ch%d_c%d", par.chA, par.chB), Form("Ch%d cond Ch%d", par.chA, par.chB), 200, 0, 200);
+        TH1F *hMaxB_cond = new TH1F(Form("hMax_Ch%d_c%d", par.chB, par.chA), Form("Ch%d cond Ch%d", par.chB, par.chA), 200, 0, 200);
 
         T->SetBranchAddress(Form("p%d", par.chA), &pA);
         T->SetBranchAddress(Form("p%d", par.chB), &pB);
 
-        Long64_t nEntries = T->GetEntries();
-        for (Long64_t i = 0; i < nEntries; ++i) {
+        for (Long64_t i = 0; i < T->GetEntries(); ++i) {
             T->GetEntry(i);
-            if (pB.fMax > par.thrA) hMaxA_cond->Fill(pA.fMax);
-            if (pA.fMax > par.thrB) hMaxB_cond->Fill(pB.fMax);
+            if (pB.fMax > par.thrB) hMaxA_cond->Fill(pA.fMax);
+            if (pA.fMax > par.thrA) hMaxB_cond->Fill(pB.fMax);
         }
         hMaxA_cond->Write("", TObject::kOverwrite);
         hMaxB_cond->Write("", TObject::kOverwrite);
         delete hMaxA_cond; delete hMaxB_cond;
     }
 
-    auto DibujarCascada = [&](const std::string& nombrePlano, int inicio, int fin) {
-    TCanvas *c = new TCanvas(Form("c_%s", nombrePlano.c_str()), nombrePlano.c_str(), 1000, 900);
-    c->SetLeftMargin(0.12);
-    c->SetBottomMargin(0.12);
-    gStyle->SetOptStat(0);
-    
-    TLegend *leg = new TLegend(0.15, 0.60, 0.45, 0.88); 
-    leg->SetBorderSize(1);
-    leg->SetFillColor(0);
-    leg->SetTextSize(0.022);
-    leg->SetHeader("Condiciones de Coincidencia", "C");
+auto DibujarCascada = [&](const std::string& nombrePlano, int inicioPar, int finPar) {
+        TCanvas *c = new TCanvas(Form("c_%s", nombrePlano.c_str()), nombrePlano.c_str(), 1100, 900);
+        c->SetLeftMargin(0.12);
+        gStyle->SetOptStat(0);
+        
+        TLegend *leg = new TLegend(0.13, 0.45, 0.30, 0.89); 
+        leg->SetTextSize(0.018);
+        leg->SetHeader(Form("Canales %s", nombrePlano.c_str()));
 
-    double dx = 12.0; 
-    double dy = 15.0; 
-    int colores[] = {kBlue+1, kRed+1, kGreen+2, kOrange+2, kMagenta+1, kCyan+2, kAzure+7, kViolet-3};
-
-    TLine *lDepth0 = new TLine(0, 0, (fin-inicio)*dx, (fin-inicio)*dy);
-    lDepth0->SetLineColor(kGray+2);
-    lDepth0->SetLineStyle(2);
-
-    for (int i = inicio; i <= fin; ++i) {
-        TH1F *h = (TH1F*)dirCond->Get(Form("hMax_Ch%d_cond_Ch%d", pares[i].chA, pares[i].chB));
-        if (!h) continue;
-
-        TGraph *g = new TGraph();
-        double xShift = (i - inicio) * dx;
-        double yShift = (i - inicio) * dy;
-
-        int pt = 0;
-        for (int b = 1; b <= h->GetNbinsX(); b++) {
-            double x = h->GetBinCenter(b);
-            double y = h->GetBinContent(b);
-            if (b == 1) g->SetPoint(pt++, x + xShift, yShift); 
-            g->SetPoint(pt++, x + xShift, y + yShift);
-            if (b == h->GetNbinsX()) g->SetPoint(pt++, x + xShift, yShift);
+        // --- NUEVA LÓGICA DE ORDENAMIENTO ---
+        // Recolectamos todos los canales involucrados en este rango de pares
+        struct InfoCanal { int id; int idCond; };
+        std::vector<InfoCanal> listaOrdenada;
+        for (int p = inicioPar; p <= finPar; ++p) {
+            listaOrdenada.push_back({pares[p].chA, pares[p].chB});
+            listaOrdenada.push_back({pares[p].chB, pares[p].chA});
         }
+        // Ordenamos de menor a mayor ID de canal
+        std::sort(listaOrdenada.begin(), listaOrdenada.end(), [](const InfoCanal& a, const InfoCanal& b) {
+            return a.id < b.id;
+        });
 
-        int colorActual = colores[(i - inicio) % 8];
-        g->SetLineColor(colorActual);
-        g->SetLineWidth(2);
-        leg->AddEntry(g, Form("Ch%d (si Ch%d > %.1f)", pares[i].chA, pares[i].chB, pares[i].thrA), "l");
+        double dx = 8.0;  
+        double dy = 12.0; 
+        int totalHists = listaOrdenada.size();
+        
+        TLine *lDepth0 = new TLine(0, 0, (totalHists-1)*dx, (totalHists-1)*dy);
+        lDepth0->SetLineColor(kGray+2);
+        lDepth0->SetLineStyle(2);
 
-        if (i == inicio) {
-            g->Draw("AL"); 
-            g->GetXaxis()->SetTitle("ADC");
-            g->GetYaxis()->SetTitle("Entries");
-            
-            double xMaxVisual = 200 + (fin - inicio) * dx;
-            g->GetXaxis()->SetRangeUser(-10, xMaxVisual + 20);
-            
-            double yMaxVisual = h->GetMaximum() + (fin - inicio) * dy;
-            g->GetYaxis()->SetRangeUser(-5, yMaxVisual + 50); 
-            
-            lDepth0->Draw();
-        } else {
-            g->Draw("L SAME");
+        int colores[] = {kBlue+1, kRed+1, kGreen+2, kOrange+2, kMagenta+1, kCyan+2, kAzure+7, kViolet-3,
+                         kPink+9, kSpring-6, kTeal+3, kYellow+2, kGray+2, kOrange-3, kRed-7, kBlue-9};
+
+        for (int j = 0; j < totalHists; ++j) {
+            int canalActual = listaOrdenada[j].id;
+            int canalCondicion = listaOrdenada[j].idCond;
+
+            TH1F *h = (TH1F*)dirCond->Get(Form("hMax_Ch%d_c%d", canalActual, canalCondicion));
+            if (!h) continue;
+
+            TGraph *g = new TGraph();
+            double xShift = j * dx;
+            double yShift = j * dy;
+
+            for (int b = 1; b <= h->GetNbinsX(); b++) {
+                g->SetPoint(b-1, h->GetBinCenter(b) + xShift, h->GetBinContent(b) + yShift);
+            }
+
+            g->SetLineColor(colores[j % 16]);
+            g->SetLineWidth(2);
+            leg->AddEntry(g, Form("Ch%d", canalActual), "l");
+
+            if (j == 0) {
+                g->Draw("AL"); 
+                g->GetXaxis()->SetTitle("ADC");
+                g->GetYaxis()->SetTitle("Entries");
+                g->GetXaxis()->SetRangeUser(-10, 200 + (totalHists * dx) + 20);
+                g->GetYaxis()->SetRangeUser(-10, h->GetMaximum() + (totalHists * dy) + 50);
+                lDepth0->Draw("SAME");
+            } else {
+                g->Draw("L SAME");
+            }
+
+            TLine *base = new TLine(xShift, yShift, 200 + xShift, yShift);
+            base->SetLineColor(kGray+1);
+            base->SetLineStyle(3);
+            base->Draw();
         }
+        
+        TLatex *title = new TLatex();
+        title->SetNDC();
+        title->SetTextSize(0.035);
+        title->DrawLatex(0.4, 0.93, Form("Amplitudes: Plano %s", nombrePlano.c_str()));
 
-        TLine *base = new TLine(xShift, yShift, 200 + xShift, yShift);
-        base->SetLineColor(kGray + 1);
-        base->SetLineStyle(2);
-        base->Draw();
-    }
-    
-    TLatex *title = new TLatex();
-    title->SetNDC(); // Usar coordenadas normalizadas (0 a 1)
-    title->SetTextSize(0.04);
-    title->SetTextAlign(22); // Centrado
-    if(nombrePlano.find("Superior") != std::string::npos)
-        title->DrawLatex(0.5, 0.95, "Plano Superior");
-    else
-        title->DrawLatex(0.5, 0.95, "Plano Inferior");
-
-    leg->Draw(); 
-    c->Write("", TObject::kOverwrite); 
-};
+        leg->Draw();
+        c->Write("", TObject::kOverwrite);
+    };
 
     dirCond->cd();
-    DibujarCascada("Cascada_Superior", 0, 7);
-    DibujarCascada("Cascada_Inferior", 8, 15);
+    DibujarCascada("Superior", 0, 7);  // Pares 0-7 -> 16 canales
+    DibujarCascada("Inferior", 8, 15); // Pares 8-15 -> 16 canales
 
     T->ResetBranchAddresses();
     f->Close();
-    std::cout << "Gráficas en cascada diagonal generadas con éxito." << std::endl;
 }
 void AnalizarEstabilidadTemperatura(const char* targetFile, int canal) {
     TFile *f = TFile::Open(targetFile, "UPDATE");
@@ -818,9 +813,14 @@ void AnalizarCargaTemporal(const char* targetFile, int canal, float threshold) {
     hQ->SetMarkerStyle(20); hQ->SetMarkerColor(kBlue+1); hQ->SetLineColor(kBlue+1);
     hQ->Write("", TObject::kOverwrite); f->Close();
 }
+// --- FUNCIONES DE CARGA EN COINCIDENCIA ---
+
 void AnalizarCargaCoincidenciaDoble(const char* targetFile, int chA, float thrA, int chB, float thrB) {
     TFile *f = TFile::Open(targetFile, "UPDATE");
+    if (!f || f->IsZombie()) { std::cout << "Error al abrir archivo." << std::endl; return; }
     TTree *T = (TTree*)f->Get("T");
+    if (!T) { f->Close(); return; }
+
     Pulse pA, pB;
     T->SetBranchAddress(Form("p%d", chA), &pA);
     T->SetBranchAddress(Form("p%d", chB), &pB);
@@ -842,7 +842,10 @@ void AnalizarCargaCoincidenciaDoble(const char* targetFile, int chA, float thrA,
 
 void AnalizarCargaCoincidenciaTriple(const char* targetFile, int targetCh, float targetThr, std::vector<int> others, std::vector<float> otherThrs) {
     TFile *f = TFile::Open(targetFile, "UPDATE");
+    if (!f || f->IsZombie()) { std::cout << "Error al abrir archivo." << std::endl; return; }
     TTree *T = (TTree*)f->Get("T");
+    if (!T) { f->Close(); return; }
+
     Pulse pTarget, pOthers[2];
     T->SetBranchAddress(Form("p%d", targetCh), &pTarget);
     for(int i=0; i<2; i++) T->SetBranchAddress(Form("p%d", others[i]), &pOthers[i]);
@@ -865,7 +868,10 @@ void AnalizarCargaCoincidenciaTriple(const char* targetFile, int targetCh, float
 
 void AnalizarCargaCoincidenciaCuadruple(const char* targetFile, int targetCh, float targetThr, std::vector<int> others, std::vector<float> otherThrs) {
     TFile *f = TFile::Open(targetFile, "UPDATE");
+    if (!f || f->IsZombie()) { std::cout << "Error al abrir archivo." << std::endl; return; }
     TTree *T = (TTree*)f->Get("T");
+    if (!T) { f->Close(); return; }
+
     Pulse pTarget, pOthers[3];
     T->SetBranchAddress(Form("p%d", targetCh), &pTarget);
     for(int i=0; i<3; i++) T->SetBranchAddress(Form("p%d", others[i]), &pOthers[i]);
@@ -886,6 +892,150 @@ void AnalizarCargaCoincidenciaCuadruple(const char* targetFile, int targetCh, fl
     hQ->SetMarkerStyle(20); hQ->SetMarkerColor(kBlue+1); hQ->SetLineColor(kBlue+1);
     hQ->Write("", TObject::kOverwrite); f->Close();
 }
+// --- Constantes de Flujo (Áreas en cm2) ---
+const float AREA_BARRA = 500.0;      // 125cm * 4cm
+const float AREA_PLANO_OR = 2000.0;  // 125cm * 16cm
+const float AREA_PIXEL_AND = 16.0;   // 4cm * 4cm (Cruce de 2 barras)
+const float AREA_GRILLA_AND = 256.0; // 16cm * 16cm (Cruce de 2 planos)
+const float BIN_TIME = 600.0;        // Tiempo por bin en segundos (10 min)
+
+// Estructura para organizar los 4 canales de una barra y sus umbrales
+struct BarraCalibrada {
+    int ch[4];
+    float thr[4];
+};
+
+// --- FUNCIONES DE FLUJO CORREGIDAS ---
+// 1. FLUJO BARRA INDIVIDUAL (4 canales en coincidencia)
+void CalcularFlujoBarra(const char* targetFile, int barraID, bool esSuperior) {
+    TFile *f = TFile::Open(targetFile, "UPDATE");
+    TTree *T = (TTree*)f->Get("T");
+    
+    // Definimos las estructuras de canales y umbrales igual que en tus otras funciones
+    std::vector<BarraCalibrada> mS = {{{0,26,1,27},{20,20,22,18}}, {{3,24,2,25},{20,17,20,19}}, {{6,28,7,29},{21,18,19,19}}, {{4,30,5,31},{19,20,20,20}}};
+    std::vector<BarraCalibrada> mI = {{{8,17,9,16},{23,20,20,20}}, {{12,18,13,19},{18,21,21,22}}, {{10,20,11,21},{20,16,19,21}}, {{14,22,15,23},{18,20,17,22}}};
+    
+    // Seleccionamos la barra específica
+    BarraCalibrada b = esSuperior ? mS[barraID] : mI[barraID];
+    
+    // Mapeamos los 4 canales de la barra
+    Pulse p[4];
+    for(int i=0; i<4; i++) T->SetBranchAddress(Form("p%d", b.ch[i]), &p[i]);
+
+    T->GetEntry(0); double ts = p[0].fAcqTime;
+    T->GetEntry(T->GetEntries()-1); double te = p[0].fAcqTime;
+
+    // Nombre dinámico para el histograma
+    TString name = Form("hFlux_Barra_%s_%d", esSuperior ? "Sup" : "Inf", barraID);
+    TH1F *h = new TH1F(name, name + ";Hora;Flujo [cm^{-2}s^{-1}]", std::max(1, (int)std::ceil((te-ts)/BIN_TIME)), ts, te);
+
+    for(Long64_t i=0; i<T->GetEntries(); i++) {
+        T->GetEntry(i);
+        // Lógica de coincidencia de los 4 canales de LA barra
+        if(p[0].fMax > b.thr[0] && p[1].fMax > b.thr[1] && 
+           p[2].fMax > b.thr[2] && p[3].fMax > b.thr[3]) {
+            h->Fill(p[0].fAcqTime);
+        }
+    }
+
+    ConfigurarEjeTiempo(h->GetXaxis());
+    h->Scale(1.0 / (BIN_TIME * AREA_BARRA)); // AREA_BARRA = 500 cm2
+    h->Write("", TObject::kOverwrite); 
+    f->Close();
+    
+    std::cout << "[+] Flujo de Barra " << (esSuperior ? "Superior " : "Inferior ") << barraID << " calculado." << std::endl;
+}
+
+// 2. FLUJO PLANO OR (Máxima Estadística)
+void CalcularFlujoPlanoOR(const char* targetFile, bool esSuperior) {
+    TFile *f = TFile::Open(targetFile, "UPDATE");
+    TTree *T = (TTree*)f->Get("T");
+    Pulse p[32]; 
+    for(int i=0; i<32; i++) T->SetBranchAddress(Form("p%d", i), &p[i]);
+
+    // Definición de barras (4 canales cada una) con umbrales de tu lista de pares
+    std::vector<BarraCalibrada> mS = {{{0,26,1,27},{20,20,22,18}}, {{3,24,2,25},{20,17,20,19}}, {{6,28,7,29},{21,18,19,19}}, {{4,30,5,31},{19,20,20,20}}};
+    std::vector<BarraCalibrada> mI = {{{8,17,9,16},{23,20,20,20}}, {{12,18,13,19},{18,21,21,22}}, {{10,20,11,21},{20,16,19,21}}, {{14,22,15,23},{18,20,17,22}}};
+    std::vector<BarraCalibrada> &m = esSuperior ? mS : mI;
+
+    T->GetEntry(0); double ts = p[0].fAcqTime;
+    T->GetEntry(T->GetEntries()-1); double te = p[0].fAcqTime;
+    TH1F *h = new TH1F(esSuperior ? "hFlux_Sup_OR" : "hFlux_Inf_OR", "Flujo Plano OR;Hora;Flujo", std::max(1,(int)std::ceil((te-ts)/BIN_TIME)), ts, te);
+
+    for(Long64_t i=0; i<T->GetEntries(); i++) {
+        T->GetEntry(i);
+        bool hitPlano = false;
+        for(int b=0; b<4; b++) {
+            if(p[m[b].ch[0]].fMax > m[b].thr[0] && p[m[b].ch[1]].fMax > m[b].thr[1] &&
+               p[m[b].ch[2]].fMax > m[b].thr[2] && p[m[b].ch[3]].fMax > m[b].thr[3]) {
+                hitPlano = true; break;
+            }
+        }
+        if(hitPlano) h->Fill(p[0].fAcqTime);
+    }
+    ConfigurarEjeTiempo(h->GetXaxis());
+    h->Scale(1.0 / (BIN_TIME * AREA_PLANO_OR));
+    h->Write("", TObject::kOverwrite); f->Close();
+}
+
+// 3. FLUJO PÍXEL (AND 2 barras cruzadas - 4 canales por barra)
+void CalcularFlujoPixel(const char* targetFile, int idBarraSup, int idBarraInf) {
+    TFile *f = TFile::Open(targetFile, "UPDATE");
+    TTree *T = (TTree*)f->Get("T");
+    Pulse p[32];
+    for(int i=0; i<32; i++) T->SetBranchAddress(Form("p%d", i), &p[i]);
+    
+    std::vector<BarraCalibrada> mS = {{{0,26,1,27},{20,20,22,18}}, {{3,24,2,25},{20,17,20,19}}, {{6,28,7,29},{21,18,19,19}}, {{4,30,5,31},{19,20,20,20}}};
+    std::vector<BarraCalibrada> mI = {{{8,17,9,16},{23,20,20,20}}, {{12,18,13,19},{18,21,21,22}}, {{10,20,11,21},{20,16,19,21}}, {{14,22,15,23},{18,20,17,22}}};
+
+    T->GetEntry(0); double ts = p[0].fAcqTime;
+    T->GetEntry(T->GetEntries()-1); double te = p[0].fAcqTime;
+    TH1F *h = new TH1F(Form("hFluxPixel_S%d_I%d", idBarraSup, idBarraInf), "Flujo Pixel;Hora;Flujo", std::max(1,(int)std::ceil((te-ts)/BIN_TIME)), ts, te);
+
+    for(Long64_t i=0; i<T->GetEntries(); i++) {
+        T->GetEntry(i);
+        bool hitS = (p[mS[idBarraSup].ch[0]].fMax > mS[idBarraSup].thr[0] && p[mS[idBarraSup].ch[1]].fMax > mS[idBarraSup].thr[1] &&
+                     p[mS[idBarraSup].ch[2]].fMax > mS[idBarraSup].thr[2] && p[mS[idBarraSup].ch[3]].fMax > mS[idBarraSup].thr[3]);
+        bool hitI = (p[mI[idBarraInf].ch[0]].fMax > mI[idBarraInf].thr[0] && p[mI[idBarraInf].ch[1]].fMax > mI[idBarraInf].thr[1] &&
+                     p[mI[idBarraInf].ch[2]].fMax > mI[idBarraInf].thr[2] && p[mI[idBarraInf].ch[3]].fMax > mI[idBarraInf].thr[3]);
+        if(hitS && hitI) h->Fill(p[0].fAcqTime);
+    }
+    ConfigurarEjeTiempo(h->GetXaxis());
+    h->Scale(1.0 / (BIN_TIME * AREA_PIXEL_AND));
+    h->Write("", TObject::kOverwrite); f->Close();
+}
+
+// 4. FLUJO VERTICAL AND (Grilla Completa - AND de Planos)
+void CalcularFlujoVerticalAND(const char* targetFile) {
+    TFile *f = TFile::Open(targetFile, "UPDATE");
+    TTree *T = (TTree*)f->Get("T");
+    Pulse p[32];
+    for(int i=0; i<32; i++) T->SetBranchAddress(Form("p%d", i), &p[i]);
+
+    std::vector<BarraCalibrada> mS = {{{0,26,1,27},{20,20,22,18}}, {{3,24,2,25},{20,17,20,19}}, {{6,28,7,29},{21,18,19,19}}, {{4,30,5,31},{19,20,20,20}}};
+    std::vector<BarraCalibrada> mI = {{{8,17,9,16},{23,20,20,20}}, {{12,18,13,19},{18,21,21,22}}, {{10,20,11,21},{20,16,19,21}}, {{14,22,15,23},{18,20,17,22}}};
+
+    T->GetEntry(0); double ts = p[0].fAcqTime;
+    T->GetEntry(T->GetEntries()-1); double te = p[0].fAcqTime;
+    TH1F *h = new TH1F("hFlux_Grilla_AND", "Flujo Vertical Grilla;Hora;Flujo", std::max(1,(int)std::ceil((te-ts)/BIN_TIME)), ts, te);
+
+    for(Long64_t i=0; i<T->GetEntries(); i++) {
+        T->GetEntry(i);
+        bool hitS = false, hitI = false;
+        for(int b=0; b<4; b++) {
+            if(p[mS[b].ch[0]].fMax > mS[b].thr[0] && p[mS[b].ch[1]].fMax > mS[b].thr[1] && p[mS[b].ch[2]].fMax > mS[b].thr[2] && p[mS[b].ch[3]].fMax > mS[b].thr[3]) { hitS = true; break; }
+        }
+        for(int b=0; b<4; b++) {
+            if(p[mI[b].ch[0]].fMax > mI[b].thr[0] && p[mI[b].ch[1]].fMax > mI[b].thr[1] && p[mI[b].ch[2]].fMax > mI[b].thr[2] && p[mI[b].ch[3]].fMax > mI[b].thr[3]) { hitI = true; break; }
+        }
+        if(hitS && hitI) h->Fill(p[0].fAcqTime);
+    }
+    ConfigurarEjeTiempo(h->GetXaxis());
+    h->Scale(1.0 / (BIN_TIME * AREA_GRILLA_AND));
+    h->Write("", TObject::kOverwrite); f->Close();
+}
+// --- MAIN ACTUALIZADO ---
+
 int main(int argc, char** argv) {
     setenv("TZ", "America/Santiago", 1);
     tzset();
@@ -893,7 +1043,6 @@ int main(int argc, char** argv) {
         ProcesarPSA(argv[1], argv[2]);
         return 0;
     }
-
     int opcion;
     std::cout << "\n--- SOFTWARE DE ANÁLISIS DE PULSOS ---" << std::endl;
     std::cout << "1.  Procesamiento PSA (Raw -> Root)" << std::endl;
@@ -919,12 +1068,19 @@ int main(int argc, char** argv) {
     std::cout << "21. Carga Ch Objetivo en Coincidencia DOBLE" << std::endl;
     std::cout << "22. Carga Ch Objetivo en Coincidencia TRIPLE" << std::endl;
     std::cout << "23. Carga Ch Objetivo en Coincidencia CUADRUPLE" << std::endl;
+    std::cout << "--- OPCIONES DE FLUJO (NORMALIZADO POR ÁREA) ---" << std::endl;
+    std::cout << "24. Flujo Individual [cm-2 s-1]" << std::endl;
+    std::cout << "25. Flujo Plano OR (Superior e Inferior)" << std::endl;
+    std::cout << "26. Flujo Píxel (AND 2 barras cruzadas 4ch+4ch)" << std::endl;
+    std::cout << "27. Flujo Vertical AND (Grilla 16x16)" << std::endl;
     std::cout << "0.  Salir" << std::endl;
+    std::cout << "--------------------------------------" << std::endl;
+    std::cout << "Seleccione: ";
     
     if (!(std::cin >> opcion) || opcion == 0) return 0;
 
     std::string file;
-    if (opcion >= 2 && opcion <= 20) {
+    if (opcion >= 2 && opcion <= 27) {
         std::cout << "Archivo .root a analizar: ";
         std::cin >> file;
     }
@@ -1112,8 +1268,42 @@ int main(int argc, char** argv) {
             AnalizarCargaCoincidenciaCuadruple(file.c_str(), target, tTarget, others, tOthers);
             break;
         }
+        case 24: { // Flujo de una Barra Individual (Coincidencia de sus 4 canales)
+            int barraID, plano;
+            std::cout << "Plano (1: Superior, 0: Inferior): "; std::cin >> plano;
+            std::cout << "ID de Barra (0-3): "; std::cin >> barraID;
+            if(barraID < 0 || barraID > 3) {
+                std::cout << "ID no válido." << std::endl;
+            } else {
+                CalcularFlujoBarra(file.c_str(), barraID, (plano == 1));
+            }
+            break;
+        }
+        case 25: { // Flujo Plano OR (Máxima Estadística)
+            std::cout << "Calculando Flujo Plano OR para ambos planos..." << std::endl;
+            // Ejecuta ambos automáticamente o puedes preguntar cuál
+            CalcularFlujoPlanoOR(file.c_str(), true);  // Superior
+            CalcularFlujoPlanoOR(file.c_str(), false); // Inferior
+            break;
+        }
+        case 26: { // Flujo Píxel (AND entre dos barras cruzadas)
+            int bS, bI;
+            std::cout << "ID Barra Superior (0-3): "; std::cin >> bS;
+            std::cout << "ID Barra Inferior (0-3): "; std::cin >> bI;
+            if(bS >= 0 && bS <= 3 && bI >= 0 && bI <= 3) {
+                CalcularFlujoPixel(file.c_str(), bS, bI);
+            } else {
+                std::cout << "IDs fuera de rango." << std::endl;
+            }
+            break;
+        }
+        case 27: { // Flujo Vertical AND (Grilla completa)
+            std::cout << "Calculando Flujo Vertical Grilla (AND de Planos)..." << std::endl;
+            CalcularFlujoVerticalAND(file.c_str()); 
+            break;
+        }
         default:
-            std::cout << "Opción no válida." << std::endl;
+            std::cout << "Opción no válida o saliendo." << std::endl;
             break;
     }
     return 0;
